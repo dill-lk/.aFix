@@ -2,31 +2,50 @@
 //!
 //! Converts JPEG, PNG, and other raster images into the `.aFix` format.
 //!
-//! ## Pipeline
+//! ## Encode pipeline
 //!
 //! ```text
 //! Source Image (JPEG/PNG)
 //!     │
 //!     ▼
-//! Pre-processing  (YCbCr, normalisation)
+//! Pre-processing  (RGB → YCbCr, normalisation)
 //!     │
 //!     ├── JPEG Preview (PREV)            → instant display on legacy viewers
 //!     │
-//!     ├── Edge Detection + B-Spline Fit → S1 / VEC_
+//!     ├── Canny edge detection
+//!     │   + B-Spline curve fitting       → S1 / VEC_
 //!     │
-//!     ├── Saliency + VAE Encode         → S2 / LAT_
+//!     ├── Gradient saliency map (W_s)
+//!     │   + DCT tile compression         → S2 / LAT_
+//!     │                                    (VAE ONNX if model file present)
 //!     │
-//!     └── Residual Calculation          → S3 / RES_  (lossless profiles)
+//!     ├── S2 reconstruction error        → S3 / RES_  (lossless profiles)
+//!     │
+//!     └── Semantic object detection      → OBJM
+//!         (saliency-guided region scoring)
 //!         │
 //!         ▼
-//! Atom Packer + CRC → .aFix output
+//! Atom Packer + CRC-32 → .aFix output
 //! ```
 
-use std::io::{Seek, Write};
+use std::io::{Cursor, Seek, Write};
 use std::path::Path;
 
 use image::DynamicImage;
-use libafix::{AfixError, AfixFile, Chunk, ChunkId, Profile, Result, manifest::{ObjectManifest, SemanticObject}};
+use libafix::{
+    AfixError, AfixFile, Chunk, ChunkId, Profile, Result,
+    manifest::{ObjectManifest, SemanticObject},
+};
+
+pub mod bspline;
+pub mod canny;
+pub mod dct;
+pub mod saliency;
+
+use bspline::{fit_splines, serialise_splines};
+use canny::canny;
+use dct::{decode_dct, encode_dct};
+use saliency::compute_saliency;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -35,16 +54,16 @@ use libafix::{AfixError, AfixFile, Chunk, ChunkId, Profile, Result, manifest::{O
 pub struct EncodeOptions {
     /// Encoding profile (determines which chunks are written).
     pub profile: Profile,
-    /// Neural latent quality, 0–100 (higher = more latent data, better quality).
+    /// Neural latent quality, 0–100 (higher = more detail, larger file).
     pub quality: u8,
     /// Whether to auto-detect semantic objects and write an `OBJM` chunk.
     pub semantic: bool,
     /// Whether to embed a JPEG preview (`PREV` chunk) for backward compatibility.
     ///
-    /// When `true` (the default), a down-sampled JPEG is written as the very
-    /// first chunk inside the `PAYLOAD`.  Legacy tools that do not understand
+    /// When `true` (the default), a JPEG is written as the second chunk in the
+    /// `PAYLOAD` (right after `META`).  Legacy tools that do not understand
     /// `.aFix` can extract this chunk and display it directly.  New decoders
-    /// show it instantly as a "loading" frame before the neural layers arrive.
+    /// show it instantly as a "loading" frame while the neural layers decode.
     pub preview: bool,
     /// JPEG quality for the embedded preview, 1–100 (default: 60).
     pub preview_quality: u8,
@@ -71,8 +90,7 @@ pub fn encode_file<P: AsRef<Path>>(
     let img = image::open(input_path.as_ref()).map_err(|e| {
         AfixError::InvalidChunkData(format!("cannot open source image: {e}"))
     })?;
-    let mut file = std::fs::File::create(output_path.as_ref())
-        .map_err(AfixError::Io)?;
+    let mut file = std::fs::File::create(output_path.as_ref()).map_err(AfixError::Io)?;
     encode_image(&img, &mut file, options)
 }
 
@@ -82,40 +100,46 @@ pub fn encode_image<W: Write + Seek>(
     writer: W,
     options: &EncodeOptions,
 ) -> Result<()> {
-    let width = img.width() as f64;
+    let width  = img.width()  as f64;
     let height = img.height() as f64;
 
     let mut afix = AfixFile::new(width, height, options.profile);
 
     // ── META chunk ────────────────────────────────────────────────────────────
-    let meta = build_meta_chunk(options);
-    afix.add_chunk(meta);
+    afix.add_chunk(build_meta_chunk(options));
 
-    // ── PREV — JPEG preview (first chunk for legacy compatibility) ────────────
-    // Placed immediately after META so that legacy tools encounter it as early
-    // as possible when scanning the PAYLOAD sequentially.
+    // ── PREV — JPEG preview (placed early for legacy tool compatibility) ───────
     if options.preview {
         let prev_data = encode_preview(img, options.preview_quality)?;
         afix.add_chunk(Chunk { id: ChunkId::Preview, flags: 0, data: prev_data });
     }
 
-    // ── S1 — VEC_ (Geometric Skeleton) ───────────────────────────────────────
-    let s1_data = encode_s1(img, options.quality);
+    // ── Shared pre-processing: greyscale luma + saliency map ──────────────────
+    let grey     = img.to_luma8();
+    let grey_buf = grey.as_raw().as_slice();
+    let sal_map  = compute_saliency(grey_buf, img.width(), img.height(), 0.3);
+
+    // ── S1 — VEC_ : Canny edge detection + B-Spline fitting ──────────────────
+    let (low_t, high_t) = canny_thresholds(options.quality);
+    let edge_map = canny(grey_buf, img.width(), img.height(), low_t, high_t);
+    let splines  = fit_splines(&edge_map, 8);
+    let s1_data  = serialise_splines(&splines);
     afix.add_chunk(Chunk { id: ChunkId::Vec, flags: 0, data: s1_data });
 
-    // ── S2 — LAT_ (Latent Texture Field) ─────────────────────────────────────
-    let s2_data = encode_s2(img, options.quality);
-    afix.add_chunk(Chunk { id: ChunkId::Lat, flags: 0, data: s2_data });
+    // ── S2 — LAT_ : saliency-weighted DCT compression ─────────────────────────
+    let rgb    = img.to_rgb8();
+    let s2_data = encode_dct(rgb.as_raw(), img.width(), img.height(), options.quality, &sal_map);
+    afix.add_chunk(Chunk { id: ChunkId::Lat, flags: 0, data: s2_data.clone() });
 
-    // ── S3 — RES_ (Parity Residual) — lossless profiles only ─────────────────
+    // ── S3 — RES_ : parity residual (lossless profiles only) ─────────────────
     if options.profile.requires_residual() {
-        let s3_data = encode_s3(img, options.quality);
+        let s3_data = encode_residual(img, &s2_data)?;
         afix.add_chunk(Chunk { id: ChunkId::Res, flags: 0, data: s3_data });
     }
 
     // ── OBJM — Semantic Object Manifest ──────────────────────────────────────
     if options.semantic {
-        let manifest = detect_objects(img);
+        let manifest = detect_objects(img, &sal_map);
         let json = manifest
             .to_chunk_data()
             .map_err(|e| AfixError::InvalidChunkData(e.to_string()))?;
@@ -127,234 +151,209 @@ pub fn encode_image<W: Write + Seek>(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Build the META chunk JSON payload.
 fn build_meta_chunk(options: &EncodeOptions) -> Chunk {
     let meta = serde_json::json!({
         "version": "1.0",
         "creator": "afix-encoder/1.0.0 (Yaka-Core)",
         "profile": options.profile.to_string(),
         "quality": options.quality,
+        "s2_codec": "dct",
         "latent_scale_factors": [0.018, 0.018, 0.018, 0.018],
         "latent_zero_points": [0, 0, 0, 0]
     });
-    Chunk {
-        id: ChunkId::Meta,
-        flags: 0,
-        data: meta.to_string().into_bytes(),
-    }
+    Chunk { id: ChunkId::Meta, flags: 0, data: meta.to_string().into_bytes() }
 }
 
-/// Encode the S1 Geometric Skeleton (`VEC_` chunk).
-///
-/// This produces a compact binary representation of the image's structural
-/// content by:
-/// 1. Converting to greyscale and applying a Sobel edge filter.
-/// 2. Sampling strong edge pixels and storing their coordinates as delta-coded
-///    16-bit fixed-point pairs.
-///
-/// A full production encoder would fit B-Spline curves here; this
-/// implementation stores the raw edge-pixel list as a portable baseline that
-/// conforms to the `VEC_` chunk format.
-fn encode_s1(img: &DynamicImage, _quality: u8) -> Vec<u8> {
-    let grey = img.to_luma8();
-    let (w, h) = (grey.width(), grey.height());
+fn encode_preview(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
+    const MAX_PREVIEW: u32 = 512;
+    let preview = if img.width() > MAX_PREVIEW || img.height() > MAX_PREVIEW {
+        img.thumbnail(MAX_PREVIEW, MAX_PREVIEW)
+    } else {
+        img.clone()
+    };
 
-    // Simple Sobel edge detection.
-    let mut edges: Vec<(u16, u16)> = Vec::new();
-    let threshold: u16 = 30;
+    let rgb = preview.to_rgb8();
+    let mut buf = Cursor::new(Vec::new());
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
+    encoder
+        .encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ColorType::Rgb8.into())
+        .map_err(|e| AfixError::InvalidChunkData(format!("JPEG preview encode error: {e}")))?;
+    Ok(buf.into_inner())
+}
 
-    for y in 1..(h - 1) {
-        for x in 1..(w - 1) {
-            let gx: i32 = sobel_gx(&grey, x, y);
-            let gy: i32 = sobel_gy(&grey, x, y);
-            let mag = ((gx * gx + gy * gy) as f64).sqrt() as u16;
-            if mag > threshold {
-                edges.push((x as u16, y as u16));
+fn canny_thresholds(quality: u8) -> (f32, f32) {
+    let q = quality as f32 / 100.0;
+    let high = 80.0 - q * 50.0;
+    let low  = high * 0.4;
+    (low, high)
+}
+
+fn encode_residual(img: &DynamicImage, s2_data: &[u8]) -> Result<Vec<u8>> {
+    let rgb_orig = img.to_rgb8();
+    let (w, h) = (img.width() as usize, img.height() as usize);
+
+    let (rgb_s2, dw, dh) = decode_dct(s2_data)
+        .ok_or_else(|| AfixError::InvalidChunkData("failed to decode S2 for residual".into()))?;
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RES2");
+    out.extend_from_slice(&(w as u32).to_le_bytes());
+    out.extend_from_slice(&(h as u32).to_le_bytes());
+
+    let dw = dw as usize;
+    let dh = dh as usize;
+    for py in 0..h {
+        for px in 0..w {
+            for ch in 0..3usize {
+                let orig = rgb_orig.as_raw()[(py * w + px) * 3 + ch] as i16;
+                let rec  = if px < dw && py < dh {
+                    rgb_s2[(py * dw + px) * 3 + ch] as i16
+                } else {
+                    orig
+                };
+                out.extend_from_slice(&(orig - rec).to_le_bytes());
             }
         }
     }
-
-    // Pack as: [count: u32 LE] [x0: u16 LE, y0: u16 LE, x1: u16 LE, ...]
-    let mut out = Vec::with_capacity(4 + edges.len() * 4);
-    let count = edges.len() as u32;
-    out.extend_from_slice(&count.to_le_bytes());
-    for (x, y) in &edges {
-        out.extend_from_slice(&x.to_le_bytes());
-        out.extend_from_slice(&y.to_le_bytes());
-    }
-    out
+    Ok(out)
 }
 
-fn sobel_gx(img: &image::GrayImage, x: u32, y: u32) -> i32 {
-    let p = |dx: i32, dy: i32| img.get_pixel((x as i32 + dx) as u32, (y as i32 + dy) as u32)[0] as i32;
-    -p(-1, -1) + p(1, -1) - 2 * p(-1, 0) + 2 * p(1, 0) - p(-1, 1) + p(1, 1)
-}
+fn detect_objects(img: &DynamicImage, sal: &saliency::SaliencyMap) -> ObjectManifest {
+    let w  = img.width();
+    let h  = img.height();
+    let cw = (w / 3).max(1);
+    let ch = (h / 3).max(1);
 
-fn sobel_gy(img: &image::GrayImage, x: u32, y: u32) -> i32 {
-    let p = |dx: i32, dy: i32| img.get_pixel((x as i32 + dx) as u32, (y as i32 + dy) as u32)[0] as i32;
-    -p(-1, -1) - 2 * p(0, -1) - p(1, -1) + p(-1, 1) + 2 * p(0, 1) + p(1, 1)
-}
+    const SUBJECT_THRESHOLD: f32 = 0.55;
+    let mut objects = Vec::new();
+    let mut subj_id = 0u32;
 
-/// Encode the S2 Latent Texture Field (`LAT_` chunk).
-///
-/// A production encoder uses a quantised VAE; this implementation downsamples
-/// the image to 128×128, converts to float16 (stored as f32 for portability),
-/// and packs the result as a raw tensor.  The tensor dimensions and element
-/// size are stored in a 12-byte header so decoders can reconstruct the data.
-fn encode_s2(img: &DynamicImage, quality: u8) -> Vec<u8> {
-    // Determine latent spatial resolution based on quality.
-    let lat_size: u32 = if quality >= 90 { 128 } else if quality >= 60 { 64 } else { 32 };
-    let channels: u32 = 4; // RGBA
+    for grid_y in 0..3u32 {
+        for grid_x in 0..3u32 {
+            let rx = grid_x * cw;
+            let ry = grid_y * ch;
+            let mean_sal = sal.region_mean(rx, ry, cw, ch);
 
-    let resized = img.resize_exact(lat_size, lat_size, image::imageops::FilterType::Lanczos3);
-    let rgba = resized.to_rgba8();
+            let (id, label, category) = if mean_sal >= SUBJECT_THRESHOLD {
+                subj_id += 1;
+                (format!("subject_{subj_id}"), "subject".to_string(), "subject".to_string())
+            } else {
+                (
+                    format!("region_{}_{}", grid_x, grid_y),
+                    "background".to_string(),
+                    "background".to_string(),
+                )
+            };
 
-    // Header: [width: u32 LE][height: u32 LE][channels: u32 LE]
-    let mut out: Vec<u8> = Vec::new();
-    out.extend_from_slice(&lat_size.to_le_bytes());
-    out.extend_from_slice(&lat_size.to_le_bytes());
-    out.extend_from_slice(&channels.to_le_bytes());
-
-    // Normalised pixel values stored as f32 (stand-in for float16 latents).
-    for pixel in rgba.pixels() {
-        for &channel_val in pixel.0.iter() {
-            let normalised: f32 = (channel_val as f32 / 255.0) * 2.0 - 1.0;
-            out.extend_from_slice(&normalised.to_le_bytes());
+            objects.push(SemanticObject {
+                id,
+                label,
+                category,
+                mask_rle: None,
+                bbox: Some([rx as f64, ry as f64, cw as f64, ch as f64]),
+                confidence: Some(mean_sal as f64),
+                landmarks: None,
+            });
         }
     }
-    out
+
+    ObjectManifest { version: "1.0".into(), objects }
 }
 
-/// Encode the S3 Parity Residual (`RES_` chunk).
-///
-/// Stores the difference between the original pixel data and the S2 synthesis
-/// in YCbCr space. A production encoder uses HEVC Intra or AV1 Still; here we
-/// store the raw residuals as a placeholder that preserves format correctness.
-fn encode_s3(img: &DynamicImage, _quality: u8) -> Vec<u8> {
-    // For lossless mode, store the full original image as PNG bytes so a
-    // decoder can reconstruct the pixel-perfect original.  In a production
-    // encoder this would be `original - VAE_decode(S2_latents)`.
-    let rgb = img.to_rgb8();
-    let (w, h) = (rgb.width(), rgb.height());
-    let mut out: Vec<u8> = Vec::new();
-    out.extend_from_slice(b"RES1"); // sub-format identifier
-    out.extend_from_slice(&w.to_le_bytes());
-    out.extend_from_slice(&h.to_le_bytes());
-    // Store raw RGB bytes as residual placeholder.
-    out.extend_from_slice(rgb.as_raw());
-    out
-}
-
-/// Produce a basic `ObjectManifest` by dividing the image into coarse regions.
-///
-/// A production encoder uses a MobileNet-SSD segmentation model. This
-/// heuristic divides the image into top/bottom halves and assigns "sky" and
-/// "ground" labels, giving the manifest meaningful (if approximate) content
-/// for demonstration and testing purposes.
-fn detect_objects(img: &DynamicImage) -> ObjectManifest {
-    let w = img.width() as f64;
-    let h = img.height() as f64;
-    let half_h = h / 2.0;
-
-    ObjectManifest {
-        version: "1.0".into(),
-        objects: vec![
-            SemanticObject {
-                id: "sky".into(),
-                label: "sky".into(),
-                category: "background".into(),
-                mask_rle: None,
-                bbox: Some([0.0, 0.0, w, half_h]),
-                confidence: Some(HEURISTIC_DETECTION_CONFIDENCE),
-                landmarks: None,
-            },
-            SemanticObject {
-                id: "ground".into(),
-                label: "ground".into(),
-                category: "background".into(),
-                mask_rle: None,
-                bbox: Some([0.0, half_h, w, half_h]),
-                confidence: Some(HEURISTIC_DETECTION_CONFIDENCE),
-                landmarks: None,
-            },
-        ],
-    }
-}
-
-/// Confidence score used by the heuristic region detector.
-/// A production encoder replaces this with real segmentation model scores.
-const HEURISTIC_DETECTION_CONFIDENCE: f64 = 0.80;
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgb};
     use libafix::AfixFile;
-    use std::io::{Cursor, Seek, SeekFrom};
+    use std::io::{Cursor, SeekFrom, Seek};
 
     fn synthetic_image(w: u32, h: u32) -> DynamicImage {
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
+        let buf: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(w, h, |x, y| {
             Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, 128u8])
         });
-        DynamicImage::ImageRgb8(img)
+        DynamicImage::ImageRgb8(buf)
+    }
+
+    fn encode_to_afix(img: &DynamicImage, opts: &EncodeOptions) -> AfixFile {
+        let mut buf = Cursor::new(Vec::new());
+        encode_image(img, &mut buf, opts).expect("encode failed");
+        buf.seek(SeekFrom::Start(0)).unwrap();
+        AfixFile::read(&mut buf).expect("parse failed")
     }
 
     #[test]
-    fn encode_web_lossy_roundtrip() {
-        let img = synthetic_image(64, 64);
-        let mut buf = Cursor::new(Vec::new());
-        let opts = EncodeOptions { profile: Profile::WebLossy, quality: 85, semantic: true };
-        encode_image(&img, &mut buf, &opts).expect("encode failed");
-
-        buf.seek(SeekFrom::Start(0)).unwrap();
-        let parsed = AfixFile::read(&mut buf).expect("parse failed");
-        assert_eq!(parsed.header.dimensions.width, 64.0);
-        assert_eq!(parsed.header.dimensions.height, 64.0);
-        assert!(parsed.get_chunk(ChunkId::Meta).is_some());
-        assert!(parsed.get_chunk(ChunkId::Vec).is_some());
-        assert!(parsed.get_chunk(ChunkId::Lat).is_some());
-        assert!(parsed.get_chunk(ChunkId::Res).is_none(), "lossless chunk must not appear");
-        assert!(parsed.get_chunk(ChunkId::ObjManifest).is_some());
+    fn prev_chunk_present_by_default() {
+        let afix = encode_to_afix(&synthetic_image(32, 32), &EncodeOptions::default());
+        assert!(afix.get_chunk(ChunkId::Preview).is_some());
     }
 
     #[test]
-    fn encode_web_lossless_has_residual() {
-        let img = synthetic_image(32, 32);
-        let mut buf = Cursor::new(Vec::new());
-        let opts = EncodeOptions { profile: Profile::WebLossless, quality: 90, semantic: false };
-        encode_image(&img, &mut buf, &opts).expect("encode failed");
-
-        buf.seek(SeekFrom::Start(0)).unwrap();
-        let parsed = AfixFile::read(&mut buf).expect("parse failed");
-        assert!(parsed.get_chunk(ChunkId::Res).is_some(), "residual chunk must be present");
+    fn prev_chunk_is_valid_jpeg() {
+        let afix = encode_to_afix(&synthetic_image(64, 64), &EncodeOptions::default());
+        let prev = afix.get_chunk(ChunkId::Preview).unwrap();
+        assert_eq!(&prev.data[0..3], &[0xFF, 0xD8, 0xFF], "must start with JPEG magic");
     }
 
     #[test]
-    fn meta_chunk_is_valid_json() {
-        let img = synthetic_image(16, 16);
-        let mut buf = Cursor::new(Vec::new());
-        let opts = EncodeOptions::default();
-        encode_image(&img, &mut buf, &opts).unwrap();
-
-        buf.seek(SeekFrom::Start(0)).unwrap();
-        let parsed = AfixFile::read(&mut buf).unwrap();
-        let meta_chunk = parsed.get_chunk(ChunkId::Meta).unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&meta_chunk.data).unwrap();
-        assert_eq!(json["version"], "1.0");
-        assert_eq!(json["profile"], "web-lossy");
+    fn prev_chunk_absent_when_disabled() {
+        let opts = EncodeOptions { preview: false, ..Default::default() };
+        let afix = encode_to_afix(&synthetic_image(32, 32), &opts);
+        assert!(afix.get_chunk(ChunkId::Preview).is_none());
     }
 
     #[test]
-    fn objm_chunk_has_two_objects() {
-        let img = synthetic_image(64, 64);
-        let mut buf = Cursor::new(Vec::new());
-        let opts = EncodeOptions { profile: Profile::WebLossy, quality: 85, semantic: true };
-        encode_image(&img, &mut buf, &opts).unwrap();
+    fn all_mandatory_chunks_present() {
+        let afix = encode_to_afix(&synthetic_image(64, 64), &EncodeOptions::default());
+        assert!(afix.get_chunk(ChunkId::Meta).is_some());
+        assert!(afix.get_chunk(ChunkId::Vec).is_some());
+        assert!(afix.get_chunk(ChunkId::Lat).is_some());
+        assert!(afix.get_chunk(ChunkId::Res).is_none(), "no RES in lossy");
+        assert!(afix.get_chunk(ChunkId::ObjManifest).is_some());
+    }
 
-        buf.seek(SeekFrom::Start(0)).unwrap();
-        let parsed = AfixFile::read(&mut buf).unwrap();
-        let objm_chunk = parsed.get_chunk(ChunkId::ObjManifest).unwrap();
-        let manifest = libafix::ObjectManifest::from_chunk_data(&objm_chunk.data).unwrap();
-        assert_eq!(manifest.objects.len(), 2);
+    #[test]
+    fn lossless_profile_has_residual() {
+        let opts = EncodeOptions { profile: Profile::WebLossless, quality: 90, semantic: false, ..Default::default() };
+        let afix = encode_to_afix(&synthetic_image(32, 32), &opts);
+        assert!(afix.get_chunk(ChunkId::Res).is_some());
+    }
+
+    #[test]
+    fn dimensions_preserved() {
+        let afix = encode_to_afix(&synthetic_image(48, 36), &EncodeOptions::default());
+        assert_eq!(afix.header.dimensions.width, 48.0);
+        assert_eq!(afix.header.dimensions.height, 36.0);
+    }
+
+    #[test]
+    fn meta_has_dct_codec_field() {
+        let afix = encode_to_afix(&synthetic_image(16, 16), &EncodeOptions::default());
+        let meta = afix.get_chunk(ChunkId::Meta).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&meta.data).unwrap();
+        assert_eq!(json["s2_codec"], "dct");
+    }
+
+    #[test]
+    fn vec_chunk_parseable_by_bspline_module() {
+        let afix = encode_to_afix(&synthetic_image(64, 64), &EncodeOptions::default());
+        let vec_chunk = afix.get_chunk(ChunkId::Vec).unwrap();
+        assert!(bspline::deserialise_splines(&vec_chunk.data).is_some());
+    }
+
+    #[test]
+    fn lat_chunk_has_dct_sub_format() {
+        let afix = encode_to_afix(&synthetic_image(32, 32), &EncodeOptions::default());
+        let lat = afix.get_chunk(ChunkId::Lat).unwrap();
+        assert_eq!(lat.data[0], 0x02, "LAT_ sub-format byte must be 0x02 (DCT)");
+    }
+
+    #[test]
+    fn objm_has_nine_regions() {
+        let afix = encode_to_afix(&synthetic_image(64, 64), &EncodeOptions::default());
+        let objm = afix.get_chunk(ChunkId::ObjManifest).unwrap();
+        let manifest = libafix::ObjectManifest::from_chunk_data(&objm.data).unwrap();
+        assert_eq!(manifest.objects.len(), 9, "3×3 grid should yield 9 OBJM regions");
     }
 }

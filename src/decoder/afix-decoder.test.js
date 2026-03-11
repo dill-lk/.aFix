@@ -150,4 +150,45 @@ describe('AfixDecoder', () => {
     expect(file.getChunk('VEC_')).not.toBeNull();
     expect(file.getChunk('OBJM')).not.toBeNull();
   });
+
+  // ── PREV chunk (JPEG backward-compat preview) ─────────────────────────────
+
+  test('PREV chunk is exposed via previewJpeg getter', () => {
+    // Minimal JPEG magic bytes: FF D8 FF E0 ...
+    const fakeJpeg = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x01]);
+    const buf  = buildAfixBuffer({
+      chunks: [
+        { id: 'META', data: Buffer.from('{}') },
+        { id: 'PREV', data: fakeJpeg },
+      ],
+    });
+    const file = new AfixDecoder(buf).decode();
+    expect(file.previewJpeg).not.toBeNull();
+    expect(file.previewJpeg[0]).toBe(0xFF);
+    expect(file.previewJpeg[1]).toBe(0xD8);
+    expect(file.previewJpeg[2]).toBe(0xFF);
+  });
+
+  test('previewJpeg returns null when PREV chunk absent', () => {
+    const buf  = buildAfixBuffer({ chunks: [{ id: 'META', data: Buffer.from('{}') }] });
+    const file = new AfixDecoder(buf).decode();
+    expect(file.previewJpeg).toBeNull();
+  });
+
+  test('PREV chunk can coexist with other chunks', () => {
+    const fakeJpeg = Buffer.from([0xFF, 0xD8, 0xFF]);
+    const metaJson = JSON.stringify({ version: '1.0', s2_codec: 'dct' });
+    const buf  = buildAfixBuffer({
+      chunks: [
+        { id: 'META', data: Buffer.from(metaJson) },
+        { id: 'PREV', data: fakeJpeg },
+        { id: 'VEC_', data: Buffer.from([0, 0, 0, 0]) },
+      ],
+    });
+    const file = new AfixDecoder(buf).decode();
+    expect(file.chunks).toHaveLength(3);
+    expect(file.previewJpeg).not.toBeNull();
+    expect(file.meta.s2_codec).toBe('dct');
+    expect(file.getChunk('VEC_')).not.toBeNull();
+  });
 });

@@ -65,15 +65,44 @@ fn print_info(path: &str) -> Result<(), String> {
             ChunkId::Vec => {
                 if chunk.data.len() >= 4 {
                     let count = u32::from_le_bytes(chunk.data[..4].try_into().unwrap_or([0; 4]));
-                    println!("  │   edges    : {count} detected");
+                    println!("  │   splines  : {count}");
+                }
+            }
+            ChunkId::Preview => {
+                // JPEG magic = FF D8 FF
+                let is_jpeg = chunk.data.len() >= 3
+                    && chunk.data[0] == 0xFF
+                    && chunk.data[1] == 0xD8
+                    && chunk.data[2] == 0xFF;
+                if is_jpeg {
+                    println!("  │   codec    : JPEG (legacy compat preview)");
                 }
             }
             ChunkId::Lat => {
-                if chunk.data.len() >= 12 {
-                    let w = u32::from_le_bytes(chunk.data[0..4].try_into().unwrap_or([0; 4]));
-                    let h = u32::from_le_bytes(chunk.data[4..8].try_into().unwrap_or([0; 4]));
-                    let c = u32::from_le_bytes(chunk.data[8..12].try_into().unwrap_or([0; 4]));
-                    println!("  │   tensor   : {w}×{h}×{c}");
+                if chunk.data.len() >= 14 {
+                    match chunk.data[0] {
+                        0x02 => {
+                            // DCT sub-format.
+                            let tiles_w = u32::from_le_bytes(chunk.data[1..5].try_into().unwrap_or([0; 4]));
+                            let tiles_h = u32::from_le_bytes(chunk.data[5..9].try_into().unwrap_or([0; 4]));
+                            let quality = chunk.data[13];
+                            println!("  │   codec    : DCT tiles {}×{} blocks, quality {}", tiles_w, tiles_h, quality);
+                        }
+                        0x01 => {
+                            // VAE sub-format.
+                            let w = u32::from_le_bytes(chunk.data[1..5].try_into().unwrap_or([0; 4]));
+                            let h = u32::from_le_bytes(chunk.data[5..9].try_into().unwrap_or([0; 4]));
+                            let c = u32::from_le_bytes(chunk.data[9..13].try_into().unwrap_or([0; 4]));
+                            println!("  │   codec    : VAE latent {}×{}×{} (float16)", w, h, c);
+                        }
+                        _ => {
+                            // Legacy raw pixel format.
+                            let w = u32::from_le_bytes(chunk.data[0..4].try_into().unwrap_or([0; 4]));
+                            let h = u32::from_le_bytes(chunk.data[4..8].try_into().unwrap_or([0; 4]));
+                            let c = u32::from_le_bytes(chunk.data[8..12].try_into().unwrap_or([0; 4]));
+                            println!("  │   tensor   : {}×{}×{} (raw)", w, h, c);
+                        }
+                    }
                 }
             }
             ChunkId::ObjManifest => {

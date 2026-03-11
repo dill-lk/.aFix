@@ -37,6 +37,7 @@ const CHUNK_IDS = {
   DPTH: 'DPTH',
   SIGB: 'SIGB',
   OBJM: 'OBJM',
+  PREV: 'PREV',
 };
 
 // ── Utility functions ──────────────────────────────────────────────────────────
@@ -225,10 +226,48 @@ export class AfixFile {
   }
 
   /**
+   * Returns the raw JPEG bytes of the embedded backward-compatibility preview
+   * (`PREV` chunk), or `null` if the file has no preview.
+   *
+   * Legacy viewers can extract this and display it directly.  The progressive
+   * renderer uses it as the instant first frame (LOD -1) before any neural
+   * layers are decoded.
+   *
+   * @returns {Uint8Array|null}
+   */
+  get previewJpeg() {
+    const chunk = this.getChunk(CHUNK_IDS.PREV);
+    return chunk ? chunk.data : null;
+  }
+
+  /**
+   * Create an `<img>` element that displays the embedded JPEG preview
+   * immediately (no decode, no canvas, works in all browsers).
+   *
+   * @returns {HTMLImageElement|null}  or null if no PREV chunk exists
+   */
+  createPreviewImage() {
+    const jpeg = this.previewJpeg;
+    if (!jpeg) return null;
+    const blob = new Blob([jpeg], { type: 'image/jpeg' });
+    const img  = new Image();
+    img.src    = URL.createObjectURL(blob);
+    img.width  = this.dimensions.width;
+    img.height = this.dimensions.height;
+    return img;
+  }
+
+  /**
    * Render the decoded image into a `<canvas>` element using progressive LOD.
    *
+   * Rendering stages:
+   *   -1  PREV JPEG preview (instant, if present) → afix:preview
+   *    0  S1 Geometric Skeleton (VEC_)             → afix:skeleton
+   *    1  S2 Latent Texture (LAT_)                 → afix:textured
+   *    2  S3 Parity Residual correction (RES_)     → afix:ready
+   *
    * @param {HTMLCanvasElement} canvas — target canvas element
-   * @param {{lod?: number}} [options] — max LOD to render (0=skeleton, 1=textured, 2=lossless)
+   * @param {{lod?: number}} [options] — max LOD to render (default 2)
    * @returns {Promise<void>}
    */
   async renderToCanvas(canvas, options = {}) {
@@ -238,6 +277,12 @@ export class AfixFile {
 
     canvas.width  = this.dimensions.width;
     canvas.height = this.dimensions.height;
+
+    // LOD -1 — JPEG preview (PREV chunk) — instant, no decode needed
+    const prevRendered = await this._renderPreview(ctx);
+    if (prevRendered) {
+      canvas.dispatchEvent(new CustomEvent('afix:preview'));
+    }
 
     // LOD-0 — Geometric Skeleton (VEC_ chunk)
     this._renderSkeleton(ctx);
@@ -258,6 +303,37 @@ export class AfixFile {
   }
 
   // ── Internal rendering helpers ───────────────────────────────────────────────
+
+  /**
+   * Render the PREV JPEG preview chunk as the instant first frame.
+   *
+   * This is the backward-compatibility layer: the embedded JPEG is decoded by
+   * the browser's native codec and drawn onto the canvas immediately, giving
+   * zero-latency display before the neural layers arrive.
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   * @returns {Promise<boolean>} true if the preview was rendered
+   */
+  async _renderPreview(ctx) {
+    const jpeg = this.previewJpeg;
+    if (!jpeg) return false;
+
+    return new Promise(resolve => {
+      const blob = new Blob([jpeg], { type: 'image/jpeg' });
+      const url  = URL.createObjectURL(blob);
+      const img  = new Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, this.dimensions.width, this.dimensions.height);
+        URL.revokeObjectURL(url);
+        resolve(true);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(false);
+      };
+      img.src = url;
+    });
+  }
 
   /**
    * Render the S1 Geometric Skeleton by drawing detected edge pixels.

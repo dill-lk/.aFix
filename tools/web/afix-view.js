@@ -26,12 +26,13 @@
  *
  * ## Events
  *
- * | Event           | Description                                      |
- * |-----------------|--------------------------------------------------|
- * | `afix:skeleton` | S1 vector skeleton rendered                      |
- * | `afix:textured` | S2 neural texture composited                     |
- * | `afix:ready`    | All requested LOD layers decoded                 |
- * | `afix:error`    | Decode or network error (`event.detail.error`)   |
+ * | Event           | Description                                                 |
+ * |-----------------|-------------------------------------------------------------|
+ * | `afix:preview`  | JPEG backward-compat preview displayed (LOD -1)            |
+ * | `afix:skeleton` | S1 vector skeleton rendered (LOD 0)                        |
+ * | `afix:textured` | S2 neural texture composited (LOD 1)                       |
+ * | `afix:ready`    | All requested LOD layers decoded (LOD 2)                   |
+ * | `afix:error`    | Decode or network error (`event.detail.error`)             |
  *
  * @license MIT
  */
@@ -112,7 +113,7 @@ class AfixImg extends HTMLElement {
 
   /**
    * Current decode state.
-   * @type {'idle'|'loading'|'skeleton'|'textured'|'lossless'|'error'}
+   * @type {'idle'|'loading'|'preview'|'skeleton'|'textured'|'lossless'|'error'}
    */
   get state() {
     return this._state;
@@ -149,9 +150,10 @@ class AfixImg extends HTMLElement {
       this._afixFile = decoder.decode();
 
       // Forward canvas events to the host element.
-      for (const event of ['afix:skeleton', 'afix:textured', 'afix:ready']) {
+      for (const event of ['afix:preview', 'afix:skeleton', 'afix:textured', 'afix:ready']) {
         this._canvas.addEventListener(event, (e) => {
           this.dispatchEvent(new CustomEvent(e.type, { bubbles: true, composed: true }));
+          if (e.type === 'afix:preview')  this._setState('preview');
           if (e.type === 'afix:skeleton') this._setState('skeleton');
           if (e.type === 'afix:textured') this._setState('textured');
           if (e.type === 'afix:ready')    this._setState('lossless');

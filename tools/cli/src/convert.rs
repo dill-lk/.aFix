@@ -26,6 +26,8 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut profile = Profile::WebLossy;
     let mut quality: u8 = 85;
     let mut semantic = true;
+    let mut preview = true;
+    let mut preview_quality: u8 = 60;
     let mut batch = false;
     let mut output: Option<PathBuf> = None;
     let mut positional: Vec<String> = Vec::new();
@@ -44,6 +46,12 @@ fn run(args: &[String]) -> Result<(), String> {
                 quality = s.parse::<u8>().map_err(|e| format!("invalid quality: {e}"))?;
             }
             "--no-semantic" => semantic = false,
+            "--no-preview"  => preview = false,
+            "--preview-quality" => {
+                i += 1;
+                let s = args.get(i).ok_or("--preview-quality requires a value")?;
+                preview_quality = s.parse::<u8>().map_err(|e| format!("invalid preview-quality: {e}"))?;
+            }
             "--batch" => batch = true,
             "--output" | "-o" => {
                 i += 1;
@@ -62,7 +70,7 @@ fn run(args: &[String]) -> Result<(), String> {
         i += 1;
     }
 
-    let options = EncodeOptions { profile, quality, semantic };
+    let options = EncodeOptions { profile, quality, semantic, preview, preview_quality };
 
     if batch {
         // ── Batch mode ────────────────────────────────────────────────────────
@@ -143,17 +151,20 @@ fn print_help() {
         "    afix-convert --batch <INPUT_DIR> --output <OUTPUT_DIR> [OPTIONS]\n",
         "\n",
         "OPTIONS:\n",
-        "    --profile, -p   Encoding profile (web-lossy*, web-lossless, spatial,\n",
-        "                    trusted, full)\n",
-        "    --quality, -q   Neural latent quality 0-100 (default: 85)\n",
-        "    --no-semantic   Disable semantic object detection\n",
-        "    --batch         Convert all images in INPUT directory\n",
-        "    --output, -o    Output file or directory\n",
-        "    --help, -h      Show this help message\n",
+        "    --profile, -p       Encoding profile (web-lossy*, web-lossless, spatial,\n",
+        "                        trusted, full)\n",
+        "    --quality, -q       Neural/DCT quality 0-100 (default: 85)\n",
+        "    --no-semantic       Disable semantic object detection\n",
+        "    --no-preview        Omit the JPEG backward-compat preview (PREV chunk)\n",
+        "    --preview-quality   JPEG quality for the preview, 1-100 (default: 60)\n",
+        "    --batch             Convert all images in INPUT directory\n",
+        "    --output, -o        Output file or directory\n",
+        "    --help, -h          Show this help message\n",
         "\n",
         "EXAMPLES:\n",
         "    afix-convert photo.jpg\n",
         "    afix-convert --profile web-lossless photo.png photo.afix\n",
         "    afix-convert --batch ./images/ --output ./afix-images/\n",
+        "    afix-convert --no-preview photo.jpg photo.afix\n",
     ));
 }
