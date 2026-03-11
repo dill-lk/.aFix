@@ -3,11 +3,16 @@ name: Windows Build
 on:
   push:
     branches: ["**"]
+    tags:
+      - "v*"
   pull_request:
     branches: ["**"]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-encoder:
@@ -37,6 +42,14 @@ jobs:
       - name: Run encoder tests
         run: cargo test -p afix-encoder
 
+      - name: Upload encoder binary to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} --generate-notes || true
+          gh release upload ${{ github.ref_name }} target/release/afix-encoder.exe --clobber
+
   build-decoder:
     name: Build Decoder (Windows)
     runs-on: windows-latest
@@ -47,7 +60,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: src/decoder/package-lock.json
 
