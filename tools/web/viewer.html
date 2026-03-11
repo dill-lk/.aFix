@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>.aFix Viewer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0d1117;
+      --surface:    #161b22;
+      --surface2:   #21262d;
+      --border:     #30363d;
+      --accent:     #238636;
+      --accent-fg:  #3fb950;
+      --text:       #c9d1d9;
+      --text-dim:   #8b949e;
+      --tag-bg:     #1f3a4a;
+      --tag-fg:     #58a6ff;
+      --error:      #f85149;
+      --radius:     8px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    header .logo {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    header .logo span { color: var(--accent-fg); }
+
+    header .tagline {
+      font-size: 13px;
+      color: var(--text-dim);
+      margin-left: auto;
+    }
+
+    /* ── Drop zone ─────────────────────────────────────────────────────── */
+    #drop-area {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 48px 32px;
+      margin: 32px auto;
+      max-width: 680px;
+      width: calc(100% - 48px);
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    #drop-area.drag-over {
+      border-color: var(--accent-fg);
+      background: rgba(63, 185, 80, 0.06);
+    }
+
+    #drop-area .icon { font-size: 40px; margin-bottom: 12px; }
+
+    #drop-area p { color: var(--text-dim); font-size: 14px; }
+
+    #drop-area strong { color: var(--text); }
+
+    #file-input { display: none; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 16px;
+      padding: 8px 18px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    .btn:hover { opacity: 0.85; }
+
+    /* ── Main layout ──────────────────────────────────────────────────── */
+    #viewer {
+      display: none;
+      gap: 24px;
+      padding: 0 24px 48px;
+      max-width: 1280px;
+      margin: 0 auto;
+      width: 100%;
+      flex: 1;
+    }
+
+    #viewer.visible {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+    }
+
+    @media (max-width: 900px) {
+      #viewer.visible { grid-template-columns: 1fr; }
+    }
+
+    /* ── Canvas column ────────────────────────────────────────────────── */
+    #canvas-col {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    #canvas-wrapper {
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 300px;
+      position: relative;
+    }
+
+    #render-canvas {
+      max-width: 100%;
+      max-height: 70vh;
+      display: block;
+      object-fit: contain;
+    }
+
+    #lod-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      font-size: 13px;
+    }
+
+    #lod-bar label { color: var(--text-dim); }
+
+    .lod-btn {
+      padding: 4px 12px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface2);
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .lod-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    #status-bar {
+      font-size: 12px;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    #status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+
+    #status-indicator.loading { background: #e3b341; animation: pulse 1s infinite; }
+    #status-indicator.ready   { background: var(--accent-fg); }
+    #status-indicator.error   { background: var(--error); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* ── Info column ──────────────────────────────────────────────────── */
+    #info-col {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 10px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .card-body { padding: 14px; }
+
+    /* ── File summary table ───────────────────────────────────────────── */
+    .info-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+    .info-table td { padding: 5px 0; }
+
+    .info-table td:first-child { color: var(--text-dim); width: 110px; }
+
+    .info-table td:last-child { font-weight: 500; }
+
+    /* ── Chunk list ───────────────────────────────────────────────────── */
+    #chunk-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .chunk-tag {
+      display: inline-block;
+      padding: 3px 9px;
+      background: var(--tag-bg);
+      color: var(--tag-fg);
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    .chunk-tag.present { opacity: 1; }
+    .chunk-tag.absent  { opacity: 0.35; filter: grayscale(1); }
+
+    /* ── JSON viewer ──────────────────────────────────────────────────── */
+    .json-viewer {
+      background: var(--surface2);
+      border-radius: 4px;
+      padding: 12px;
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      overflow-x: auto;
+      white-space: pre;
+      max-height: 300px;
+      overflow-y: auto;
+      color: var(--text);
+    }
+
+    .json-key    { color: #79c0ff; }
+    .json-string { color: #a5d6ff; }
+    .json-number { color: #ffa657; }
+    .json-bool   { color: #ff7b72; }
+    .json-null   { color: #ff7b72; }
+
+    /* ── Object layer list ────────────────────────────────────────────── */
+    .layer-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .layer-item:last-child { border-bottom: none; }
+
+    .layer-id {
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      background: var(--tag-bg);
+      color: var(--tag-fg);
+      padding: 2px 7px;
+      border-radius: 3px;
+    }
+
+    .layer-label { flex: 1; }
+
+    .layer-category {
+      font-size: 11px;
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+
+    .layer-conf {
+      font-size: 11px;
+      color: var(--accent-fg);
+    }
+
+    /* ── Error message ────────────────────────────────────────────────── */
+    #error-msg {
+      display: none;
+      background: rgba(248, 81, 73, 0.1);
+      border: 1px solid var(--error);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      font-size: 13px;
+      color: var(--error);
+      margin: 0 24px;
+      max-width: calc(680px + 48px);
+      margin: 0 auto;
+      width: calc(100% - 48px);
+    }
+
+    #error-msg.visible { display: block; margin-top: 16px; }
+
+    /* ── Footer ───────────────────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 12px 24px;
+      font-size: 12px;
+      color: var(--text-dim);
+      text-align: center;
+      margin-top: auto;
+    }
+
+    footer a { color: var(--tag-fg); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo">·<span>aFix</span> Viewer</div>
+    <div class="tagline">Adaptive Flexible Image X — browser-native viewer</div>
+  </header>
+
+  <!-- Drop zone (shown when no file is loaded) -->
+  <div id="drop-area" role="button" tabindex="0" aria-label="Drop an .afix file here or click to browse">
+    <div class="icon">🖼️</div>
+    <p><strong>Drop an .afix file here</strong></p>
+    <p>or click the button below to browse</p>
+    <button class="btn" id="browse-btn">📂 Browse file…</button>
+    <input type="file" id="file-input" accept=".afix" />
+  </div>
+
+  <!-- Error banner -->
+  <div id="error-msg" role="alert"></div>
+
+  <!-- Main viewer (hidden until a file is loaded) -->
+  <div id="viewer">
+
+    <!-- Left column: canvas + controls -->
+    <div id="canvas-col">
+      <div id="canvas-wrapper">
+        <canvas id="render-canvas" aria-label="Rendered .aFix image"></canvas>
+      </div>
+
+      <div id="lod-bar">
+        <label>LOD:</label>
+        <button class="lod-btn" data-lod="0">0 — Skeleton</button>
+        <button class="lod-btn" data-lod="1">1 — Textured</button>
+        <button class="lod-btn active" data-lod="2">2 — Full</button>
+      </div>
+
+      <div id="status-bar">
+        <div id="status-indicator"></div>
+        <span id="status-text">Idle</span>
+      </div>
+    </div>
+
+    <!-- Right column: metadata cards -->
+    <div id="info-col">
+
+      <!-- File summary -->
+      <div class="card" id="card-summary">
+        <div class="card-header">File Info</div>
+        <div class="card-body">
+          <table class="info-table">
+            <tbody>
+              <tr><td>File</td><td id="info-filename">—</td></tr>
+              <tr><td>Size</td><td id="info-filesize">—</td></tr>
+              <tr><td>Version</td><td id="info-version">—</td></tr>
+              <tr><td>Dimensions</td><td id="info-dimensions">—</td></tr>
+              <tr><td>Profile</td><td id="info-profile">—</td></tr>
+              <tr><td>Quality</td><td id="info-quality">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Chunk presence map -->
+      <div class="card" id="card-chunks">
+        <div class="card-header">Chunks</div>
+        <div class="card-body">
+          <div id="chunk-list"></div>
+        </div>
+      </div>
+
+      <!-- META JSON -->
+      <div class="card" id="card-meta">
+        <div class="card-header">META chunk</div>
+        <div class="card-body">
+          <div id="meta-json" class="json-viewer">No META chunk found.</div>
+        </div>
+      </div>
+
+      <!-- Semantic layers (OBJM) -->
+      <div class="card" id="card-objm" style="display:none">
+        <div class="card-header">Semantic Objects (OBJM)</div>
+        <div class="card-body">
+          <div id="objm-layers"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <footer>
+    <a href="https://github.com/dill-lk/.aFix" target="_blank" rel="noopener">·aFix</a>
+    &nbsp;·&nbsp; MIT License
+  </footer>
+
+  <script type="module">
+    import { AfixDecoder } from '../../src/decoder/afix-decoder.js';
+
+    // ── DOM refs ──────────────────────────────────────────────────────────────
+    const dropArea    = document.getElementById('drop-area');
+    const browseBtn   = document.getElementById('browse-btn');
+    const fileInput   = document.getElementById('file-input');
+    const viewer      = document.getElementById('viewer');
+    const errorMsg    = document.getElementById('error-msg');
+    const canvas      = document.getElementById('render-canvas');
+    const statusInd   = document.getElementById('status-indicator');
+    const statusTxt   = document.getElementById('status-text');
+    const lodBtns     = document.querySelectorAll('.lod-btn');
+
+    // Info fields
+    const infoFilename   = document.getElementById('info-filename');
+    const infoFilesize   = document.getElementById('info-filesize');
+    const infoVersion    = document.getElementById('info-version');
+    const infoDimensions = document.getElementById('info-dimensions');
+    const infoProfile    = document.getElementById('info-profile');
+    const infoQuality    = document.getElementById('info-quality');
+
+    const chunkList = document.getElementById('chunk-list');
+    const metaJson  = document.getElementById('meta-json');
+    const cardObjm  = document.getElementById('card-objm');
+    const objmLayers = document.getElementById('objm-layers');
+
+    // All known chunk IDs
+    const ALL_CHUNKS = ['META', 'VEC_', 'LAT_', 'RES_', 'DPTH', 'SIGB', 'OBJM', 'PREV'];
+
+    let currentLod = 2;
+    let currentFile = null;   // AfixFile
+    let currentFilename = ''; // string
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    function setStatus(state, text) {
+      statusInd.className = state;
+      statusTxt.textContent = text;
+    }
+
+    function showError(msg) {
+      errorMsg.textContent = `⚠️  ${msg}`;
+      errorMsg.classList.add('visible');
+      setStatus('error', 'Error');
+    }
+
+    function clearError() {
+      errorMsg.textContent = '';
+      errorMsg.classList.remove('visible');
+    }
+
+    function formatBytes(n) {
+      if (n < 1024)       return `${n} B`;
+      if (n < 1048576)    return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / 1048576).toFixed(2)} MB`;
+    }
+
+    // ── Syntax-highlight JSON ─────────────────────────────────────────────────
+    function highlightJson(obj) {
+      const json = JSON.stringify(obj, null, 2);
+      return json
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"([^"]+)":/g, '<span class="json-key">"$1"</span>:')
+        .replace(/: "([^"]*)"/g, ': <span class="json-string">"$1"</span>')
+        .replace(/: (-?\d+\.?\d*)/g, ': <span class="json-number">$1</span>')
+        .replace(/: (true|false)/g, ': <span class="json-bool">$1</span>')
+        .replace(/: (null)/g, ': <span class="json-null">$1</span>');
+    }
+
+    // ── Render the file ───────────────────────────────────────────────────────
+    async function renderFile(file, lod) {
+      setStatus('loading', `Rendering LOD ${lod}…`);
+
+      try {
+        await file.renderToCanvas(canvas, { lod });
+        setStatus('ready', `LOD ${lod} rendered`);
+      } catch (err) {
+        showError(`Render failed: ${err.message}`);
+      }
+    }
+
+    // ── Populate info panels ──────────────────────────────────────────────────
+    function populateInfo(file, filename, fileSize) {
+      // Summary
+      infoFilename.textContent   = filename;
+      infoFilesize.textContent   = formatBytes(fileSize);
+      const v = file.version;
+      const vFlag = v.flag != null ? `.${v.flag}` : '';
+      infoVersion.textContent    = `${v.major ?? 0}.${v.minor ?? 0}.${v.patch ?? 0}${vFlag}`;
+      infoDimensions.textContent = `${file.dimensions.width} × ${file.dimensions.height} px`;
+
+      const meta = file.meta;
+      infoProfile.textContent  = meta?.profile  ?? '—';
+      infoQuality.textContent  = meta?.quality != null ? String(meta.quality) : '—';
+
+      // Chunk tags
+      chunkList.innerHTML = '';
+      const presentIds = new Set(file.chunks.map(c => c.id));
+      for (const id of ALL_CHUNKS) {
+        const tag = document.createElement('span');
+        tag.className  = `chunk-tag ${presentIds.has(id) ? 'present' : 'absent'}`;
+        tag.textContent = id;
+        tag.title = presentIds.has(id) ? `${id} — present` : `${id} — absent`;
+        chunkList.appendChild(tag);
+      }
+
+      // META JSON
+      if (meta) {
+        metaJson.innerHTML = highlightJson(meta);
+      } else {
+        metaJson.textContent = 'No META chunk found.';
+      }
+
+      // OBJM layers
+      const objm = file.objectManifest;
+      if (objm?.objects?.length) {
+        cardObjm.style.display = '';
+        objmLayers.innerHTML = '';
+        for (const obj of objm.objects) {
+          const item = document.createElement('div');
+          item.className = 'layer-item';
+          item.innerHTML = `
+            <span class="layer-id">${escHtml(obj.id)}</span>
+            <span class="layer-label">${escHtml(obj.label ?? '')}</span>
+            <span class="layer-category">${escHtml(obj.category ?? '')}</span>
+            ${obj.confidence != null ? `<span class="layer-conf">${(obj.confidence * 100).toFixed(0)}%</span>` : ''}
+          `;
+          objmLayers.appendChild(item);
+        }
+      } else {
+        cardObjm.style.display = 'none';
+      }
+    }
+
+    function escHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // ── Load file from ArrayBuffer ────────────────────────────────────────────
+    async function loadBuffer(buffer, filename, fileSize) {
+      clearError();
+      setStatus('loading', 'Parsing…');
+      dropArea.style.display = 'none';
+      viewer.classList.add('visible');
+
+      try {
+        const decoder = new AfixDecoder(buffer);
+        currentFile   = decoder.decode();
+        currentFilename = filename;
+
+        populateInfo(currentFile, filename, fileSize);
+        await renderFile(currentFile, currentLod);
+      } catch (err) {
+        viewer.classList.remove('visible');
+        dropArea.style.display = '';
+        showError(err.message);
+      }
+    }
+
+    // ── File input / drag-and-drop ────────────────────────────────────────────
+    browseBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      fileInput.click();
+    });
+
+    dropArea.addEventListener('click', () => fileInput.click());
+
+    dropArea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') fileInput.click();
+    });
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files[0]) handleFile(fileInput.files[0]);
+    });
+
+    dropArea.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropArea.classList.add('drag-over');
+    });
+
+    dropArea.addEventListener('dragleave', () => {
+      dropArea.classList.remove('drag-over');
+    });
+
+    dropArea.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropArea.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file) handleFile(file);
+    });
+
+    function handleFile(file) {
+      const reader = new FileReader();
+      reader.onload = (e) => loadBuffer(e.target.result, file.name, file.size);
+      reader.onerror = () => showError('Failed to read file.');
+      reader.readAsArrayBuffer(file);
+    }
+
+    // ── LOD buttons ───────────────────────────────────────────────────────────
+    lodBtns.forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!currentFile) return;
+        const lod = parseInt(btn.dataset.lod, 10);
+        currentLod = lod;
+        lodBtns.forEach(b => b.classList.toggle('active', b === btn));
+        await renderFile(currentFile, lod);
+      });
+    });
+
+    // ── Canvas events forwarded from AfixFile ─────────────────────────────────
+    // These event names are part of the afix-decoder.js public API (renderToCanvas).
+    const DECODE_EVENTS = {
+      'afix:preview':  { state: 'loading', text: 'Preview frame…'   },
+      'afix:skeleton': { state: 'loading', text: 'Skeleton layer…'   },
+      'afix:textured': { state: 'loading', text: 'Texture layer…'    },
+      'afix:ready':    { state: 'ready',   text: 'Ready'             },
+    };
+    for (const [event, { state, text }] of Object.entries(DECODE_EVENTS)) {
+      canvas.addEventListener(event, () => setStatus(state, text));
+    }
+  </script>
+</body>
+</html>
