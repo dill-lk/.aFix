@@ -1,0 +1,19 @@
+[package]
+name = "afix-cli"
+version = "1.0.0"
+edition = "2021"
+description = "afix-convert — command-line tool for converting images to .aFix format"
+license = "MIT"
+
+[[bin]]
+name = "afix-convert"
+path = "src/convert.rs"
+
+[[bin]]
+name = "afix-info"
+path = "src/info.rs"
+
+[dependencies]
+libafix = { path = "../../src/libafix" }
+afix-encoder = { path = "../../src/encoder" }
+serde_json = "1"

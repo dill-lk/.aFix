@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "src/libafix",
+    "src/encoder",
+    "tools/cli",
+]
+resolver = "2"
