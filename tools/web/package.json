@@ -1,0 +1,17 @@
+{
+  "name": "afix-view",
+  "version": "1.0.0",
+  "description": "<afix-img> web component — drop-in replacement for <img> that renders .aFix files",
+  "main": "afix-view.js",
+  "type": "module",
+  "files": ["afix-view.js", "afix-view.min.js"],
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+  },
+  "keywords": ["afix", "image", "web-component", "custom-element", "webgpu"],
+  "license": "MIT",
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "jest-environment-jsdom": "^29.0.0"
+  }
+}

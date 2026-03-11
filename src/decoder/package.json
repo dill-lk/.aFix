@@ -1,0 +1,15 @@
+{
+  "name": "afix-decoder",
+  "version": "1.0.0",
+  "description": "JavaScript/WASM decoder for the .aFix image format",
+  "main": "afix-decoder.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "jest-environment-node": "^29.0.0"
+  }
+}
