@@ -1,0 +1,23 @@
+[workspace]
+members = [".", "../../src/libafix", "../../src/encoder"]
+resolver = "2"
+
+[package]
+name = "afix-studio"
+version = "1.0.0"
+edition = "2021"
+description = "aFix Studio — Windows desktop app to convert and view .aFix images"
+license = "MIT"
+
+# On Windows: suppress the console window so the app opens as a proper GUI.
+# On other platforms the subsystem is simply ignored at link time.
+
+[dependencies]
+libafix      = { path = "../../src/libafix" }
+afix-encoder = { path = "../../src/encoder" }
+eframe       = { version = "0.33", default-features = false, features = ["default_fonts", "glow"] }
+rfd          = "0.17"
+image        = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[dev-dependencies]
+tempfile = "3"

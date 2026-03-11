@@ -56,6 +56,49 @@ jobs:
           gh release upload ${{ github.ref_name }} target/release/afix-convert.exe --clobber
           gh release upload ${{ github.ref_name }} target/release/afix-info.exe --clobber
 
+  build-studio-windows:
+    name: Build aFix Studio (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/afix-studio/target
+          key: ${{ runner.os }}-studio-cargo-${{ hashFiles('tools/afix-studio/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-studio-cargo-
+
+      - name: Build aFix Studio (release)
+        working-directory: tools/afix-studio
+        run: cargo build --release
+
+      - name: Run aFix Studio tests
+        working-directory: tools/afix-studio
+        run: cargo test
+
+      - name: Upload aFix Studio binary (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: afix-studio-windows
+          path: tools/afix-studio/target/release/afix-studio.exe
+
+      - name: Upload aFix Studio to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} --generate-notes || true
+          gh release upload ${{ github.ref_name }} tools/afix-studio/target/release/afix-studio.exe --clobber
+
   build-cli-linux:
     name: Build CLI Tools (Linux)
     runs-on: ubuntu-latest
