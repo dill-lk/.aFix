@@ -17,6 +17,12 @@ pub enum ChunkId {
     Sig,
     /// `OBJM` — Semantic Object Manifest (BSON).
     ObjManifest,
+    /// `PREV` — JPEG preview for backward compatibility with legacy viewers.
+    ///
+    /// Old systems that do not understand `.aFix` can extract this chunk and
+    /// display the embedded JPEG directly.  New systems use it for instant
+    /// first-frame display before the neural layers are decoded.
+    Preview,
     /// Any other four-byte chunk ID.
     Unknown([u8; 4]),
 }
@@ -32,6 +38,7 @@ impl ChunkId {
             b"DPTH" => ChunkId::Depth,
             b"SIGB" => ChunkId::Sig,
             b"OBJM" => ChunkId::ObjManifest,
+            b"PREV" => ChunkId::Preview,
             _ => ChunkId::Unknown(b),
         }
     }
@@ -46,6 +53,7 @@ impl ChunkId {
             ChunkId::Depth => *b"DPTH",
             ChunkId::Sig => *b"SIGB",
             ChunkId::ObjManifest => *b"OBJM",
+            ChunkId::Preview => *b"PREV",
             ChunkId::Unknown(b) => b,
         }
     }
@@ -60,6 +68,7 @@ impl ChunkId {
             ChunkId::Depth => "DPTH",
             ChunkId::Sig => "SIGB",
             ChunkId::ObjManifest => "OBJM",
+            ChunkId::Preview => "PREV",
             ChunkId::Unknown(_) => "????",
         }
     }

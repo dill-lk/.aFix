@@ -10,6 +10,8 @@
 //!     ▼
 //! Pre-processing  (YCbCr, normalisation)
 //!     │
+//!     ├── JPEG Preview (PREV)            → instant display on legacy viewers
+//!     │
 //!     ├── Edge Detection + B-Spline Fit → S1 / VEC_
 //!     │
 //!     ├── Saliency + VAE Encode         → S2 / LAT_
@@ -37,11 +39,26 @@ pub struct EncodeOptions {
     pub quality: u8,
     /// Whether to auto-detect semantic objects and write an `OBJM` chunk.
     pub semantic: bool,
+    /// Whether to embed a JPEG preview (`PREV` chunk) for backward compatibility.
+    ///
+    /// When `true` (the default), a down-sampled JPEG is written as the very
+    /// first chunk inside the `PAYLOAD`.  Legacy tools that do not understand
+    /// `.aFix` can extract this chunk and display it directly.  New decoders
+    /// show it instantly as a "loading" frame before the neural layers arrive.
+    pub preview: bool,
+    /// JPEG quality for the embedded preview, 1–100 (default: 60).
+    pub preview_quality: u8,
 }
 
 impl Default for EncodeOptions {
     fn default() -> Self {
-        EncodeOptions { profile: Profile::WebLossy, quality: 85, semantic: true }
+        EncodeOptions {
+            profile: Profile::WebLossy,
+            quality: 85,
+            semantic: true,
+            preview: true,
+            preview_quality: 60,
+        }
     }
 }
 
@@ -73,6 +90,14 @@ pub fn encode_image<W: Write + Seek>(
     // ── META chunk ────────────────────────────────────────────────────────────
     let meta = build_meta_chunk(options);
     afix.add_chunk(meta);
+
+    // ── PREV — JPEG preview (first chunk for legacy compatibility) ────────────
+    // Placed immediately after META so that legacy tools encounter it as early
+    // as possible when scanning the PAYLOAD sequentially.
+    if options.preview {
+        let prev_data = encode_preview(img, options.preview_quality)?;
+        afix.add_chunk(Chunk { id: ChunkId::Preview, flags: 0, data: prev_data });
+    }
 
     // ── S1 — VEC_ (Geometric Skeleton) ───────────────────────────────────────
     let s1_data = encode_s1(img, options.quality);
