@@ -66,11 +66,11 @@ The `.aFix` format discards the "Pixel Grid" philosophy of the 1990s. It treats 
 
 | Byte Offset | Identifier | Size | Function |
 |-------------|------------|------|----------|
-| `0x00–0x03` | `AFIX` | 4 B | Magic Number. ASCII `A`, `F`, `I`, `X` (hex `41 46 49 58`). |
-| `0x04–0x07` | `VSN_` | 4 B | Protocol Version. Packed as `MAJOR.MINOR.PATCH.FLAG` (1 byte each). |
-| `0x08–0x1F` | `DESC` | 24 B | Global Dimensions. Two IEEE 754 doubles (width, height) + 8 B reserved. |
-| `0x20–0xAF` | `ATOM_MAP` | 144 B | 6 × 24-byte pointers: {stream_id, byte_offset, byte_length, checksum}. |
-| `0xB0–EOF` | `PAYLOAD` | Var | Encrypted, entropy-coded bitstream (see §2.3). |
+| `0x00–0x04` | `AFIXK` | 5 B | Magic Number. ASCII `A`, `F`, `I`, `X` + sentinel `K` (hex `41 46 49 58 4B`). |
+| `0x05–0x08` | `VSN_` | 4 B | Protocol Version. Packed as `MAJOR.MINOR.PATCH.FLAG` (1 byte each). |
+| `0x09–0x20` | `DESC` | 24 B | Global Dimensions. Two IEEE 754 doubles (width, height) + 7 B reserved. |
+| `0x21–0xB0` | `ATOM_MAP` | 144 B | 6 × 24-byte pointers: {stream_id, byte_offset, byte_length, checksum}. |
+| `0xB1–EOF` | `PAYLOAD` | Var | Encrypted, entropy-coded bitstream (see §2.3). |
 
 ### 2.2 Atom Chunk Format
 
@@ -450,4 +450,4 @@ The `VSN_` field encodes `MAJOR.MINOR.PATCH.FLAG`:
 
 ---
 
-*© 2026 The .aFix Foundation. This specification is released under the [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) licence. SDK implementations (`libafix`) are MIT-licenced.*
+*© 2026 The .aFix Foundation. This specification is released under the [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) licence. SDK implementations (`libafix`) are MIT-licensed.*

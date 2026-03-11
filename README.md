@@ -81,11 +81,11 @@ document.getElementById('myImage').layers['sky'].style.filter = 'sepia(1)';
 
 | Byte Offset | Block ID | Size | Description |
 |-------------|----------|------|-------------|
-| `0x00–0x03` | `AFIX` | 4 B | Magic Number — identifies the file as `.aFix`. |
-| `0x04–0x07` | `VSN_` | 4 B | Protocol Version (e.g., `1.0.0`). |
-| `0x08–0x1F` | `DESC` | 24 B | Global Dimensions (stored as Float for infinite scaling). |
-| `0x20–0xAF` | `ATOM_MAP` | 144 B | Pointers to S1, S2, and S3 locations in the bitstream. |
-| `0xB0–EOF` | `PAYLOAD` | Var | Encrypted, entropy-coded bitstream. |
+| `0x00–0x04` | `AFIXK` | 5 B | Magic Number — identifies the file as `.aFix` (hex `41 46 49 58 4B`). |
+| `0x05–0x08` | `VSN_` | 4 B | Protocol Version (e.g., `1.0.0`). |
+| `0x09–0x20` | `DESC` | 24 B | Global Dimensions (stored as Float for infinite scaling). |
+| `0x21–0xB0` | `ATOM_MAP` | 144 B | Pointers to S1, S2, and S3 locations in the bitstream. |
+| `0xB1–EOF` | `PAYLOAD` | Var | Encrypted, entropy-coded bitstream. |
 
 ### 4.2 Atom Chunk Table
 

@@ -1,6 +1,6 @@
 # libafix
 
-Core C++ and Rust library for reading and writing `.aFix` files. MIT-licenced.
+Core C++ and Rust library for reading and writing `.aFix` files. MIT-licensed.
 
 ## API Overview
 
