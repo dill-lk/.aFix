@@ -3,5 +3,11 @@ members = [
     "src/libafix",
     "src/encoder",
     "tools/cli",
+    "tools/afix-studio",
 ]
 resolver = "2"
+
+
+
+
+
