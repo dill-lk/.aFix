@@ -39,6 +39,14 @@ jobs:
       - name: Build CLI tools (release)
         run: cargo build --release -p afix-cli
 
+      - name: Upload CLI binaries (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-windows
+          path: |
+            target/release/afix-convert.exe
+            target/release/afix-info.exe
+
       - name: Upload CLI binaries to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -75,6 +83,14 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      - name: Upload CLI binaries (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux
+          path: |
+            target/release/afix-convert
+            target/release/afix-info
+
       - name: Upload CLI binaries to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -108,6 +124,14 @@ jobs:
       - name: Build CLI tools (release)
         run: cargo build --release -p afix-cli
 
+      - name: Upload CLI binaries (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-macos
+          path: |
+            target/release/afix-convert
+            target/release/afix-info
+
       - name: Upload CLI binaries to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -138,6 +162,12 @@ jobs:
       - name: Run decoder tests
         working-directory: src/decoder
         run: npm test
+
+      - name: Upload decoder (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: decoder
+          path: src/decoder/afix-decoder.js
 
       - name: Upload decoder to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
