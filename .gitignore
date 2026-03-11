@@ -1,0 +1,36 @@
+# Build artifacts
+target/
+dist/
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.wasm
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Rust
+Cargo.lock
+*.rlib
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Temporary files
+*.tmp
+*.bak
+/tmp/
