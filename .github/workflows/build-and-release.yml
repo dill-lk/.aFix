@@ -15,47 +15,6 @@ permissions:
   contents: write
 
 jobs:
-  build-cli-windows:
-    name: Build CLI Tools (Windows)
-    runs-on: windows-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Build CLI tools (release)
-        run: cargo build --release -p afix-cli
-
-      - name: Upload CLI binaries (artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-windows
-          path: |
-            target/release/afix-convert.exe
-            target/release/afix-info.exe
-
-      - name: Upload CLI binaries to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create ${{ github.ref_name }} --generate-notes || true
-          gh release upload ${{ github.ref_name }} target/release/afix-convert.exe --clobber
-          gh release upload ${{ github.ref_name }} target/release/afix-info.exe --clobber
-
   build-studio-windows:
     name: Build aFix Studio (Windows)
     runs-on: windows-latest
@@ -73,9 +32,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-studio-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-studio-cargo-
+            ${{ runner.os }}-cargo-
 
       - name: Build aFix Studio (release)
         run: cargo build --release -p afix-studio
@@ -89,131 +48,10 @@ jobs:
           name: afix-studio-windows
           path: target/release/afix-studio.exe
 
-      - name: Upload aFix Studio to GitHub Release
+      - name: Create GitHub Release and upload binary
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create ${{ github.ref_name }} --generate-notes || true
           gh release upload ${{ github.ref_name }} target/release/afix-studio.exe --clobber
-
-  build-cli-linux:
-    name: Build CLI Tools (Linux)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Build CLI tools (release)
-        run: cargo build --release -p afix-cli
-
-      - name: Run tests
-        run: cargo test --workspace
-
-      - name: Upload CLI binaries (artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-linux
-          path: |
-            target/release/afix-convert
-            target/release/afix-info
-
-      - name: Upload CLI binaries to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create ${{ github.ref_name }} --generate-notes || true
-          gh release upload ${{ github.ref_name }} target/release/afix-convert --clobber
-          gh release upload ${{ github.ref_name }} target/release/afix-info --clobber
-
-  build-cli-macos:
-    name: Build CLI Tools (macOS)
-    runs-on: macos-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Build CLI tools (release)
-        run: cargo build --release -p afix-cli
-
-      - name: Upload CLI binaries (artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-macos
-          path: |
-            target/release/afix-convert
-            target/release/afix-info
-
-      - name: Upload CLI binaries to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create ${{ github.ref_name }} --generate-notes || true
-          gh release upload ${{ github.ref_name }} target/release/afix-convert --clobber
-          gh release upload ${{ github.ref_name }} target/release/afix-info --clobber
-
-  build-decoder:
-    name: Build Decoder
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: "npm"
-          cache-dependency-path: src/decoder/package-lock.json
-
-      - name: Install dependencies
-        working-directory: src/decoder
-        run: npm ci
-
-      - name: Run decoder tests
-        working-directory: src/decoder
-        run: npm test
-
-      - name: Upload decoder (artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: decoder
-          path: src/decoder/afix-decoder.js
-
-      - name: Upload decoder to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create ${{ github.ref_name }} --generate-notes || true
-          gh release upload ${{ github.ref_name }} src/decoder/afix-decoder.js --clobber
