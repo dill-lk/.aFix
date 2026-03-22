@@ -16,6 +16,7 @@ use eframe::egui;
 use eframe::egui::{ColorImage, RichText, TextureHandle};
 
 use afix_encoder::{dct::decode_dct, encode_file, EncodeOptions};
+use afix_encoder::bspline::deserialise_splines;
 use libafix::{AfixFile, Profile};
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -802,8 +803,45 @@ fn load_afix(state: &mut ViewState, path: &std::path::Path, ctx: &egui::Context)
 
     // Decode the LAT_ chunk (DCT-based) to produce the full rendered image.
     // This is the primary visual representation of the encoded image data.
+    // After decoding, the S1 geometric skeleton (VEC_ chunk) is overlaid on top
+    // to sharpen perceived edges — this is the core purpose of the .aFix format.
     if let Some(lat) = afix.get_chunk(libafix::ChunkId::Lat) {
-        if let Some((rgb, w, h)) = decode_dct(&lat.data) {
+        if let Some((mut rgb, w, h)) = decode_dct(&lat.data) {
+            // ── Overlay S1 VEC_ skeleton ──────────────────────────────────────
+            // Evaluate each B-Spline and paint its pixels with a semi-transparent
+            // accent colour so the geometric skeleton guides edge sharpness.
+            if let Some(vec_chunk) = afix.get_chunk(libafix::ChunkId::Vec) {
+                if let Some(splines) = deserialise_splines(&vec_chunk.data) {
+                    // Blend ratio: 60% accent, 40% existing pixel.
+                    const OVERLAY_BG: u16 = 40;  // existing pixel weight (%)
+                    const OVERLAY_FG: u16 = 60;  // accent pixel weight  (%)
+                    // Accent colour: bright orange-red to contrast with image content.
+                    const OVERLAY_R: u16 = 255;
+                    const OVERLAY_G: u16 = 80;
+                    const OVERLAY_B: u16 = 40;
+
+                    let img_w = w as usize;
+                    let img_h = h as usize;
+                    for spline in &splines {
+                        // Number of evaluation steps: proportional to the spline
+                        // length to avoid gaps in the rendered edge.
+                        let steps = (spline.control_points.len() * 8).max(64);
+                        for step_i in 0..=steps {
+                            let t = step_i as f32 / steps as f32;
+                            let (sx, sy) = spline.evaluate(t);
+                            let px = sx.round() as i64;
+                            let py = sy.round() as i64;
+                            if px >= 0 && py >= 0 && (px as usize) < img_w && (py as usize) < img_h {
+                                let idx = (py as usize * img_w + px as usize) * 3;
+                                rgb[idx]     = ((rgb[idx]     as u16 * OVERLAY_BG + OVERLAY_R * OVERLAY_FG) / 100) as u8;
+                                rgb[idx + 1] = ((rgb[idx + 1] as u16 * OVERLAY_BG + OVERLAY_G * OVERLAY_FG) / 100) as u8;
+                                rgb[idx + 2] = ((rgb[idx + 2] as u16 * OVERLAY_BG + OVERLAY_B * OVERLAY_FG) / 100) as u8;
+                            }
+                        }
+                    }
+                }
+            }
+
             let size = [w as usize, h as usize];
             let rgba: Vec<u8> = rgb
                 .chunks_exact(3)
