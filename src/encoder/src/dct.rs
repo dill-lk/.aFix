@@ -24,8 +24,14 @@
 //! [height: u32 LE]    tile rows
 //! [channels: u32 LE]  = 3 (Y, Cb, Cr)
 //! [quality: u8]       0-100
+//! [sal_scales: f32 LE × tiles_w × tiles_h]  per-tile saliency scale (1.0–3.0)
 //! [coeff_data: ...]   quantised int16 DCT coefficients, block-major, zigzag order
 //! ```
+//!
+//! Storing the per-tile saliency scale in the chunk ensures the decoder can
+//! exactly invert the saliency-weighted quantisation step used at encode time,
+//! preventing the "grey wash" artefact that appears when the dequantisation step
+//! does not match the quantisation step.
 
 use crate::saliency::SaliencyMap;
 
@@ -101,8 +107,26 @@ pub fn encode_dct(
     let tiles_w = (w + BLOCK - 1) / BLOCK;
     let tiles_h = (h + BLOCK - 1) / BLOCK;
 
-    // ── 3. Encode each channel ────────────────────────────────────────────────
+    // ── 3. Encode each channel, collecting per-tile saliency scales ──────────
     let mut all_coeffs: Vec<i16> = Vec::new();
+    // sal_scale is the same for all channels of a given tile; store once per tile.
+    let mut sal_scale_table: Vec<f32> = Vec::with_capacity(tiles_w * tiles_h);
+
+    for tile_y in 0..tiles_h {
+        for tile_x in 0..tiles_w {
+            // Compute block saliency (mean of pixel saliencies in this tile).
+            let sal = saliency.region_mean(
+                (tile_x * BLOCK) as u32,
+                (tile_y * BLOCK) as u32,
+                BLOCK as u32,
+                BLOCK as u32,
+            );
+            // High saliency → finer quantisation (multiply step by (2 - sal)).
+            // Low saliency  → coarser (up to 3× the base step).
+            let sal_scale = 1.0 + 2.0 * (1.0 - sal); // [1, 3]
+            sal_scale_table.push(sal_scale);
+        }
+    }
 
     for (ch_idx, channel) in [&y_ch, &cb_ch, &cr_ch].iter().enumerate() {
         let q_table = if ch_idx == 0 { &luma_q } else { &chroma_q };
@@ -112,16 +136,8 @@ pub fn encode_dct(
                 // Extract 8×8 block (pad with edge replication if needed).
                 let block = extract_block(channel, w, h, tile_x * BLOCK, tile_y * BLOCK);
 
-                // Compute block saliency (mean of pixel saliencies in this tile).
-                let sal = saliency.region_mean(
-                    (tile_x * BLOCK) as u32,
-                    (tile_y * BLOCK) as u32,
-                    BLOCK as u32,
-                    BLOCK as u32,
-                );
-                // High saliency → finer quantisation (multiply step by (2 - sal)).
-                // Low saliency  → coarser (up to 3× the base step).
-                let sal_scale = 1.0 + 2.0 * (1.0 - sal); // [1, 3]
+                // Look up the pre-computed per-tile saliency scale.
+                let sal_scale = sal_scale_table[tile_y * tiles_w + tile_x];
 
                 // 2D DCT.
                 let dct_block = dct2d(&block);
@@ -136,13 +152,18 @@ pub fn encode_dct(
         }
     }
 
-    // ── 4. Pack header + coefficients ─────────────────────────────────────────
-    let mut out = Vec::with_capacity(13 + all_coeffs.len() * 2);
+    // ── 4. Pack header + sal_scale table + coefficients ──────────────────────
+    let sal_bytes = tiles_w * tiles_h * std::mem::size_of::<f32>(); // one f32 per tile
+    let mut out = Vec::with_capacity(13 + sal_bytes + all_coeffs.len() * 2);
     out.push(0x02u8); // sub-format: DCT
     out.extend_from_slice(&(tiles_w as u32).to_le_bytes());
     out.extend_from_slice(&(tiles_h as u32).to_le_bytes());
     out.extend_from_slice(&3u32.to_le_bytes()); // channels
     out.push(quality);
+    // Saliency scale table (tiles_w × tiles_h f32 values, row-major).
+    for &s in &sal_scale_table {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
     for &c in &all_coeffs {
         out.extend_from_slice(&c.to_le_bytes());
     }
@@ -168,11 +189,24 @@ pub fn decode_dct(data: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     let luma_q   = build_quant_table(&LUMA_QUANT_BASE,   quality);
     let chroma_q = build_quant_table(&CHROMA_QUANT_BASE, quality);
 
+    // ── Read per-tile saliency scale table ────────────────────────────────────
+    let num_tiles = tiles_w * tiles_h;
+    let sal_table_bytes = num_tiles * std::mem::size_of::<f32>(); // one f32 per tile
+    if data.len() < 14 + sal_table_bytes {
+        return None;
+    }
+    let mut sal_scale_table = vec![1.0f32; num_tiles];
+    for i in 0..num_tiles {
+        let off = 14 + i * 4;
+        sal_scale_table[i] = f32::from_le_bytes(data[off..off + 4].try_into().ok()?);
+    }
+
+    // ── Read DCT coefficients ─────────────────────────────────────────────────
     let coeffs_per_tile = BLOCK * BLOCK;
-    let total_tiles = tiles_w * tiles_h * 3;
+    let total_tiles = num_tiles * 3; // 3 channels
     let expected_coeffs = total_tiles * coeffs_per_tile;
 
-    let coeff_bytes = &data[14..];
+    let coeff_bytes = &data[14 + sal_table_bytes..];
     if coeff_bytes.len() < expected_coeffs * 2 {
         return None;
     }
@@ -185,12 +219,16 @@ pub fn decode_dct(data: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
 
         for tile_y in 0..tiles_h {
             for tile_x in 0..tiles_w {
-                // Read 64 quantised coefficients in zigzag order.
+                // Retrieve the per-tile saliency scale used during encoding.
+                let sal_scale = sal_scale_table[tile_y * tiles_w + tile_x];
+
+                // Read 64 quantised coefficients in zigzag order and dequantise
+                // with the same saliency-scaled step that was used at encode time.
                 let mut dct_block = [0f32; 64];
                 for &zi in &ZIGZAG {
                     let base = coeff_idx * 2;
                     let coeff = i16::from_le_bytes(coeff_bytes[base..base + 2].try_into().ok()?);
-                    dct_block[zi] = coeff as f32 * q_table[zi];
+                    dct_block[zi] = coeff as f32 * q_table[zi] * sal_scale;
                     coeff_idx += 1;
                 }
 
@@ -326,9 +364,11 @@ fn idct8(x: &[f32; 8]) -> [f32; 8] {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn build_quant_table(base: &[f32; 64], quality: u8) -> [f32; 64] {
-    // JPEG quality factor mapping: quality 50 → scale 1.0
+    // JPEG quality factor mapping: quality 50 → scale 1.0 (baseline table).
+    // quality 100 → scale 0.0 → all steps clamped to minimum 1.
+    // quality  1  → scale 50.0 → maximum compression.
     let q = quality.clamp(1, 100) as f32;
-    let scale = if q < 50.0 { 50.0 / q } else { (100.0 - q) / 50.0 + 0.01 };
+    let scale = if q < 50.0 { 50.0 / q } else { (100.0 - q) / 50.0 };
     let mut table = [0f32; 64];
     for (i, &b) in base.iter().enumerate() {
         table[i] = (b * scale).clamp(1.0, 255.0);
@@ -390,13 +430,13 @@ mod tests {
         assert_eq!(dw, w);
         assert_eq!(dh, h);
 
-        // With quality=90 the reconstruction error should be small (< 15 per channel).
+        // With quality=90 and correct saliency-weighted dequantisation, RMSE should be small.
         let mut total_err = 0f64;
         for (a, b) in rgb.iter().zip(decoded.iter()) {
             total_err += (*a as f64 - *b as f64).powi(2);
         }
         let rmse = (total_err / rgb.len() as f64).sqrt();
-        assert!(rmse < 32.0, "RMSE too high at quality=90: {rmse:.2}");
+        assert!(rmse < 15.0, "RMSE too high at quality=90: {rmse:.2}");
     }
 
     #[test]
@@ -414,5 +454,32 @@ mod tests {
             rgb.iter().zip(dec.iter()).map(|(&a, &b)| (a as f64 - b as f64).powi(2)).sum::<f64>() / rgb.len() as f64
         };
         assert!(mse(&enc_hi) < mse(&enc_lo), "high quality should have lower error");
+    }
+
+    /// Regression test for the "grey wash" bug.
+    ///
+    /// A pure-black image must decode to (near-)black regardless of saliency,
+    /// not to a mid-grey as happened when the dequantisation step did not
+    /// include the saliency scale that was used at encode time.
+    #[test]
+    fn pure_black_decodes_to_black() {
+        let (w, h) = (16u32, 16u32);
+        let black_rgb = vec![0u8; (w * h * 3) as usize];
+        // Use a flat (all-zero) saliency map → sal_scale will be 3 for all tiles,
+        // which was the worst-case trigger for the grey-wash bug.
+        let grey = vec![0u8; (w * h) as usize];
+        let sal = compute_saliency(&grey, w, h, 0.3);
+
+        let encoded = encode_dct(&black_rgb, w, h, 85, &sal);
+        let (decoded, _, _) = decode_dct(&encoded).expect("decode failed");
+
+        // All decoded pixels must be close to black (≤10 per channel).
+        for (i, &v) in decoded.iter().enumerate() {
+            assert!(
+                v <= 10,
+                "pixel[{}] = {v} — expected near-black, got grey (grey-wash regression)",
+                i
+            );
+        }
     }
 }
